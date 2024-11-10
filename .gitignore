@@ -1,0 +1,4 @@
+terraform.*
+main-key.pem
+.terraform
+.terraform.lock.hcl
