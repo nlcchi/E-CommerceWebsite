@@ -10,7 +10,7 @@ Follow the steps below to set up an AWS EC2 instance using Terraform.
 5. Set the permissions for the `.pem` file using `chmod 400 main-key.pem` (or the name you have given to your key pair).
 6. Run `terraform apply` to create the EC2 instance.
 7. Go to the AWS console, navigate to the instance, and retrieve the Elastic IP address.
-8. Connect to the EC2 instance using SSH: `ssh -i "main-key.pem" ec2-user@100.28.170.35`.
+8. Connect to the EC2 instance using SSH: `ssh -i "main-key.pem" ec2-user@<your-elastic-ip>`.
 9. If you cannot access the instance, try changing from `https://` to `http://` in the URL.
 
 ## to destroy
