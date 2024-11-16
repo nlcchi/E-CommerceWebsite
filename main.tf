@@ -185,21 +185,100 @@ resource "aws_lb_target_group" "web_tg" {
   }
 }
 
+# Memory and Disk Monitoring CloudWatch Alarm
+resource "aws_cloudwatch_metric_alarm" "memory_high" {
+  alarm_name          = "high-memory-utilization"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "mem_used_percent"
+  namespace           = "CWAgent"
+  period             = "300"
+  statistic          = "Average"
+  threshold          = "80"
+  alarm_description  = "Memory utilization above 80%"
+  alarm_actions      = [aws_autoscaling_policy.scale_up.arn, aws_sns_topic.cloudwatch_alarms.arn]
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.web_asg.name
+  }
+}
+
+# CloudWatch Dashboard
+resource "aws_cloudwatch_dashboard" "main" {
+  dashboard_name = "e-commerce-monitoring"
+  
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.web_asg.name]
+          ]
+          period = 300
+          region = "us-east-1"
+          title  = "EC2 CPU Utilization"
+        }
+      },
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.web_alb.arn_suffix]
+          ]
+          period = 300
+          region = "us-east-1"
+          title  = "ALB Request Count"
+        }
+      }
+    ]
+  })
+}
+
 # Launch Template and Auto Scaling Group
 resource "aws_launch_template" "web_lt" {
   name_prefix   = "web-template"
-  image_id      = "ami-0f1a6835595fb9246"
+  image_id      = "ami-0f1a6835595fb9246"  # Amazon Linux 2 AMI ID
   instance_type = "t2.micro"
+  key_name      = "main-key" 
 
   network_interfaces {
     associate_public_ip_address = true
-    security_groups             = [aws_security_group.allow_web.id]
+    security_groups            = [aws_security_group.allow_web.id]
+  }
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_profile.name
   }
 
   user_data = base64encode(<<-EOF
               #!/bin/bash
               sudo yum update -y
-              sudo yum install -y httpd wget unzip
+              sudo yum install -y httpd wget unzip amazon-cloudwatch-agent
+              
+              # Configure CloudWatch agent
+              cat > /opt/aws/amazon-cloudwatch-agent/bin/config.json <<'EOF_CW'
+              {
+                "metrics": {
+                  "metrics_collected": {
+                    "mem": {
+                      "measurement": ["mem_used_percent"],
+                      "metrics_collection_interval": 60
+                    },
+                    "disk": {
+                      "measurement": ["disk_used_percent"],
+                      "metrics_collection_interval": 60
+                    }
+                  }
+                }
+              }
+              EOF_CW
+              
+              # Start CloudWatch agent
+              sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json
+              sudo systemctl start amazon-cloudwatch-agent
+              
+              # Install web server and website
               sudo systemctl start httpd
               sudo systemctl enable httpd
               cd /tmp
@@ -211,16 +290,38 @@ resource "aws_launch_template" "web_lt" {
               EOF
   )
 
-  iam_instance_profile {
-    name = aws_iam_instance_profile.ec2_profile.name
-  }
-
   tag_specifications {
     resource_type = "instance"
     tags = {
       Name = "web-server"
     }
   }
+}
+
+# Update IAM role to allow CloudWatch agent
+resource "aws_iam_role_policy" "cloudwatch_policy" {
+  name = "cloudwatch_policy"
+  role = aws_iam_role.ec2_dynamodb_access.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+          "ec2:DescribeVolumes",
+          "ec2:DescribeTags",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams",
+          "logs:DescribeLogGroups",
+          "logs:CreateLogStream",
+          "logs:CreateLogGroup"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 resource "aws_autoscaling_group" "web_asg" {
@@ -282,6 +383,17 @@ resource "aws_autoscaling_policy" "scale_down" {
   autoscaling_group_name = aws_autoscaling_group.web_asg.name
 }
 
+# SNS Topic for CloudWatch Alarms
+resource "aws_sns_topic" "cloudwatch_alarms" {
+  name = "cloudwatch-alarms"
+}
+
+resource "aws_sns_topic_subscription" "email" {
+  topic_arn = aws_sns_topic.cloudwatch_alarms.arn
+  protocol  = "email"
+  endpoint  = "glenw.2022@smu.edu.sg"
+}
+
 resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   alarm_name          = "high-cpu-utilization"
   comparison_operator = "GreaterThanThreshold"
@@ -292,7 +404,7 @@ resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   statistic          = "Average"
   threshold          = "70"
   alarm_description  = "Scale up if CPU utilization is above 70% for 10 minutes"
-  alarm_actions      = [aws_autoscaling_policy.scale_up.arn]
+  alarm_actions      = [aws_autoscaling_policy.scale_up.arn, aws_sns_topic.cloudwatch_alarms.arn]
 
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.web_asg.name
