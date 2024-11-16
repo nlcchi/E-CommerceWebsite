@@ -391,7 +391,7 @@ resource "aws_sns_topic" "cloudwatch_alarms" {
 resource "aws_sns_topic_subscription" "email" {
   topic_arn = aws_sns_topic.cloudwatch_alarms.arn
   protocol  = "email"
-  endpoint  = "glenw.2022@smu.edu.sg"
+  endpoint  = "EMAIL HERE"
 }
 
 resource "aws_cloudwatch_metric_alarm" "high_cpu" {
